@@ -756,13 +756,13 @@ def sdc_peb(name='peb_correction'):
     b0_comb = pe.Node(niu.Merge(2), name='b0_list')
     b0_merge = pe.Node(fsl.Merge(dimension='t'), name='b0_merged')
 
-    def _load_params(param_file):
-        import json
-        with open(param_file, 'rb') as f:
-            param = json.load(f)
-        return param
-
     def _get_params(in_file_params, alt_file_params):
+        def _load_params(param_file):
+            import json
+            with open(param_file, 'r') as f:
+                param = json.load(f)
+            return param
+
         enc_dirs = [
             _load_params(in_file_params['enc_dir']),
             _load_params(alt_file_params['enc_dir'])
