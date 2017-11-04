@@ -4,14 +4,15 @@
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 from __future__ import print_function, division, unicode_literals, absolute_import
 
-from ....interfaces.io import JSONFileGrabber
-from ....interfaces import utility as niu
-from ....interfaces import ants
-from ....interfaces import fsl
-from ....pipeline import engine as pe
-from ...data import get_flirt_schedule
+from nipype.interfaces.io import JSONFileGrabber
+from nipype.interfaces import utility as niu
+from nipype.interfaces import ants
+from nipype.interfaces import fsl
+from nipype.pipeline import engine as pe
+from nipype.workflows.data import get_flirt_schedule
 
-from .utils import (b0_indices, time_avg, apply_all_corrections, b0_average,
+from nipype.workflows.dmri.fsl.utils import (b0_indices, time_avg,
+                                   apply_all_corrections, b0_average,
                     hmc_split, dwi_flirt, eddy_rotate_bvecs, rotate_bvecs,
                     insert_mat, extract_bval, recompose_dwi, recompose_xfm,
                     siemens2rads, rads2radsec, demean_image,
@@ -193,13 +194,7 @@ def all_peb_pipeline(name='hmc_sdc_ecc',
     return wf
 
 
-def all_fsl_pipeline(name='fsl_all_correct',
-                     epi_params=dict(echospacing=0.77e-3,
-                                     acc_factor=3,
-                                     enc_dir='y-'),
-                     altepi_params=dict(echospacing=0.77e-3,
-                                        acc_factor=3,
-                                        enc_dir='y')):
+def all_fsl_pipeline(name='fsl_all_correct'):
     """
     Workflow that integrates FSL ``topup`` and ``eddy``.
 
@@ -226,7 +221,8 @@ def all_fsl_pipeline(name='fsl_all_correct',
     """
 
     inputnode = pe.Node(niu.IdentityInterface(
-        fields=['in_file', 'in_bvec', 'in_bval', 'alt_file']),
+        fields=['in_file', 'in_bvec', 'in_bval', 'alt_file',
+                'in_file_params', 'alt_file_params']),
         name='inputnode')
 
     outputnode = pe.Node(niu.IdentityInterface(
@@ -251,7 +247,7 @@ def all_fsl_pipeline(name='fsl_all_correct',
     bet_dwi0 = pe.Node(fsl.BET(frac=0.3, mask=True, robust=True),
                        name='bet_dwi_pre')
 
-    sdc = sdc_peb(epi_params=epi_params, altepi_params=altepi_params)
+    sdc = sdc_peb()
     ecc = pe.Node(fsl.Eddy(method='jac'), name='fsl_eddy')
     rot_bvec = pe.Node(niu.Function(
         input_names=['in_bvec', 'eddy_params'], output_names=['out_file'],
@@ -270,7 +266,9 @@ def all_fsl_pipeline(name='fsl_all_correct',
         (bet_dwi0, sdc, [('mask_file', 'inputnode.in_mask')]),
         (inputnode, sdc, [('in_file', 'inputnode.in_file'),
                           ('alt_file', 'inputnode.alt_file'),
-                          ('in_bval', 'inputnode.in_bval')]),
+                          ('in_bval', 'inputnode.in_bval'),
+                          ('in_file_params', 'inputnode.in_file_params'),
+                          ('alt_file_params', 'inputnode.alt_file_params')]),
         (sdc, ecc, [('topup.out_enc_file', 'in_acqp'),
                     ('topup.out_fieldcoef', 'in_topup_fieldcoef'),
                     ('topup.out_movpar', 'in_topup_movpar')]),
@@ -701,15 +699,7 @@ def sdc_fmb(name='fmb_correction', interp='Linear',
     return wf
 
 
-def sdc_peb(name='peb_correction',
-            epi_params=dict(echospacing=0.77e-3,
-                            acc_factor=3,
-                            enc_dir='y-',
-                            epi_factor=1),
-            altepi_params=dict(echospacing=0.77e-3,
-                               acc_factor=3,
-                               enc_dir='y',
-                               epi_factor=1)):
+def sdc_peb(name='peb_correction'):
     """
     SDC stands for susceptibility distortion correction. PEB stands for
     phase-encoding-based.
@@ -733,6 +723,8 @@ def sdc_peb(name='peb_correction',
     >>> peb.inputs.inputnode.alt_file = 'epi_rev.nii'
     >>> peb.inputs.inputnode.in_bval = 'diffusion.bval'
     >>> peb.inputs.inputnode.in_mask = 'mask.nii'
+    >>> peb.inputs.inputnode.in_file_params = 'epi_param.json'
+    >>> peb.inputs.inputnode.alt_file_params = 'epi_rev_param.json'
     >>> peb.run() # doctest: +SKIP
 
     .. admonition:: References
@@ -753,7 +745,8 @@ def sdc_peb(name='peb_correction',
     """
 
     inputnode = pe.Node(niu.IdentityInterface(
-        fields=['in_file', 'in_bval', 'in_mask', 'alt_file', 'ref_num']),
+        fields=['in_file', 'in_bval', 'in_mask', 'alt_file', 'ref_num',
+                'in_file_params', 'alt_file_params']),
         name='inputnode')
     outputnode = pe.Node(niu.IdentityInterface(
         fields=['out_file', 'out_vsm', 'out_warp']), name='outputnode')
@@ -763,14 +756,31 @@ def sdc_peb(name='peb_correction',
     b0_comb = pe.Node(niu.Merge(2), name='b0_list')
     b0_merge = pe.Node(fsl.Merge(dimension='t'), name='b0_merged')
 
+    def _load_params(param_file):
+        import json
+        with open(param_file, 'rb') as f:
+            param = json.load(f)
+        return param
+
+    def _get_params(in_file_params, alt_file_params):
+        enc_dirs = [
+            _load_params(in_file_params['enc_dir']),
+            _load_params(alt_file_params['enc_dir'])
+        ]
+        readout_times = [
+            _load_params(in_file_params['readout_time']),
+            _load_params(alt_file_params['readout_time'])
+        ]
+        return enc_dirs, readout_times
+
+    getparams = pe.Node(niu.Function(input_names=['in_file_params',
+                                                  'alt_file_params'],
+                                     output_names=['enc_dirs',
+                                                   'readout_times'],
+                                     function=_get_params),
+                        name='getparams')
+
     topup = pe.Node(fsl.TOPUP(), name='topup')
-    topup.inputs.encoding_direction = [epi_params['enc_dir'],
-                                       altepi_params['enc_dir']]
-
-    readout = compute_readout(epi_params)
-    topup.inputs.readout_times = [readout,
-                                  compute_readout(altepi_params)]
-
     unwarp = pe.Node(fsl.ApplyTOPUP(in_index=[1], method='jac'), name='unwarp')
 
     # scaling = pe.Node(niu.Function(input_names=['in_file', 'enc_dir'],
@@ -778,11 +788,19 @@ def sdc_peb(name='peb_correction',
     #                   name='GetZoom')
     # scaling.inputs.enc_dir = epi_params['enc_dir']
     vsm2dfm = vsm2warp()
-    vsm2dfm.inputs.inputnode.enc_dir = epi_params['enc_dir']
-    vsm2dfm.inputs.inputnode.scaling = readout
+
+    def pickfirst(x):
+        return x[0]
 
     wf = pe.Workflow(name=name)
     wf.connect([
+        (inputnode, getparams, [('in_file_params', 'in_file_params'),
+                                ('alt_file_params', 'alt_file_params')]),
+        (getparams, topup, [('enc_dirs', 'encoding_direction'),
+                            ('readout_times', 'readout_times')]),
+        (getparams, vsm2dfm, [
+            (('enc_dirs', pickfirst), 'inputnode.enc_dir'),
+            (('readout_times', pickfirst), 'inputnode.scaling')]),
         (inputnode, b0_ref, [('in_file', 'in_file'),
                              (('ref_num', _checkrnum), 't_min')]),
         (inputnode, b0_alt, [('alt_file', 'in_file'),
