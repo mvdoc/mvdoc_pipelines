@@ -757,19 +757,23 @@ def sdc_peb(name='peb_correction'):
     b0_merge = pe.Node(fsl.Merge(dimension='t'), name='b0_merged')
 
     def _get_params(in_file_params, alt_file_params):
+        import json
+
         def _load_params(param_file):
-            import json
             with open(param_file, 'r') as f:
                 param = json.load(f)
             return param
 
+        in_params = _load_params(in_file_params)
+        alt_params = _load_params(alt_file_params)
+
         enc_dirs = [
-            _load_params(in_file_params['enc_dir']),
-            _load_params(alt_file_params['enc_dir'])
+            in_params['enc_dir'],
+            alt_params['enc_dir']
         ]
         readout_times = [
-            _load_params(in_file_params['readout_time']),
-            _load_params(alt_file_params['readout_time'])
+            in_params['readout_time'],
+            alt_params['readout_time']
         ]
         return enc_dirs, readout_times
 
